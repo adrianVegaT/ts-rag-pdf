@@ -158,6 +158,12 @@ proxy.ts                        Session refresh on every request
 .env.example                    Environment variables template
 ```
 
+## Live demo
+
+[https://ts-rag-pdf.vercel.app](https://ts-rag-pdf.vercel.app)
+
+> Demo accounts are limited to 15000 tokens. Create an account and upload a PDF to try it out.
+
 ## Context
 
 Built as Week 5 of a 12-month roadmap transitioning from Laravel/PHP to AI
