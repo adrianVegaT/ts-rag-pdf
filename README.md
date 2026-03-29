@@ -1,36 +1,165 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# PDF Chat — RAG System
 
-## Getting Started
+A Next.js 16 application that lets you upload a PDF and ask questions about its
+content using Retrieval-Augmented Generation (RAG). Built as Week 5 of a 12-month
+roadmap transitioning from Laravel/PHP to AI engineering.
 
-First, run the development server:
+## What it does
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+- Upload a PDF and index its content automatically
+- Ask questions in natural language about the document
+- Retrieves relevant chunks using semantic search with pgvector
+- Answers using Claude with the retrieved context
+- Persists documents and chat history across sessions
+- Requires authentication before accessing the chat
+- Enforces a configurable token limit per account
+
+## How RAG works
+```
+INGESTION (when you upload a PDF)
+PDF → extract text → split into chunks → generate embeddings → store in pgvector
+
+QUERY (when you ask a question)
+Question → generate embedding → find similar chunks → pass context to Claude → answer
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Tech stack
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+- Next.js 16 (App Router)
+- TypeScript
+- Tailwind CSS v4
+- Supabase (PostgreSQL + pgvector + Auth)
+- Anthropic SDK (`@anthropic-ai/sdk`) — answers
+- OpenAI SDK (`openai`) — embeddings
+- pdf-parse — PDF text extraction
+- react-markdown
+- @tailwindcss/typography
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Models
 
-## Learn More
+- Answers: `claude-haiku-4-5-20251001` — configurable in `app/_actions/query.ts`
+- Embeddings: `text-embedding-3-small` — configurable in `app/_actions/ingest.ts`
 
-To learn more about Next.js, take a look at the following resources:
+## Setup
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+1. Clone the repository
+2. Install dependencies
+```bash
+npm install
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+3. Create a Supabase project and run this SQL in the SQL Editor:
+```sql
+CREATE EXTENSION IF NOT EXISTS vector;
 
-## Deploy on Vercel
+CREATE TABLE documents (
+    id          uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+    user_id     uuid REFERENCES auth.users(id) ON DELETE CASCADE,
+    filename    text NOT NULL,
+    chunk_text  text NOT NULL,
+    embedding   vector(1536),
+    created_at  timestamptz DEFAULT now()
+);
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+ALTER TABLE documents ENABLE ROW LEVEL SECURITY;
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+CREATE POLICY "users see own documents"
+ON documents FOR ALL
+USING (auth.uid() = user_id)
+WITH CHECK (auth.uid() = user_id);
+
+CREATE TABLE messages (
+    id              uuid DEFAULT gen_random_uuid() PRIMARY KEY,
+    user_id         uuid REFERENCES auth.users(id) ON DELETE CASCADE,
+    question        text NOT NULL,
+    response        text NOT NULL,
+    input_tokens    int NOT NULL DEFAULT 0,
+    output_tokens   int NOT NULL DEFAULT 0,
+    model           text NOT NULL,
+    created_at      timestamptz DEFAULT now()
+);
+
+ALTER TABLE messages ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "users see own messages"
+ON messages FOR ALL
+USING (auth.uid() = user_id)
+WITH CHECK (auth.uid() = user_id);
+
+CREATE OR REPLACE FUNCTION match_documents(
+    query_embedding vector(1536),
+    match_threshold float,
+    match_count int,
+    p_user_id uuid,
+    p_filename text
+)
+RETURNS TABLE (
+    id uuid,
+    chunk_text text,
+    similarity float
+)
+LANGUAGE sql STABLE
+AS $$
+    SELECT
+        documents.id,
+        documents.chunk_text,
+        1 - (documents.embedding <=> query_embedding) AS similarity
+    FROM documents
+    WHERE documents.user_id = p_user_id
+    AND documents.filename = p_filename
+    AND 1 - (documents.embedding <=> query_embedding) > match_threshold
+    ORDER BY similarity DESC
+    LIMIT match_count;
+$$;
+```
+
+4. Create a `.env.local` file in the root folder
+```bash
+ANTHROPIC_API_KEY=your_anthropic_api_key
+OPENAI_API_KEY=your_openai_api_key
+NEXT_PUBLIC_SUPABASE_URL=your_supabase_url
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key
+NEXT_PUBLIC_TOKEN_LIMIT=15000
+```
+
+5. Run the development server
+```bash
+npm run dev
+```
+
+6. Open `http://localhost:3000`
+
+## Project structure
+```
+app/
+├── auth/
+│   ├── login/
+│   │   └── page.tsx            Login page
+│   ├── register/
+│   │   └── page.tsx            Register page
+│   └── logout/
+│       └── route.ts            Logout route handler
+├── _actions/
+│   ├── ingest.ts               Server Action — PDF processing and embedding generation
+│   └── query.ts                Server Action — semantic search and Claude response
+├── _components/
+│   ├── RAGBox.tsx              Client Component — PDF upload, chat UI and token tracking
+│   ├── LoginForm.tsx           Client Component — login form
+│   └── RegisterForm.tsx        Client Component — register form
+├── globals.css                 Global styles and Tailwind configuration
+├── layout.tsx                  Root layout
+└── page.tsx                    Home page — protected, loads documents and history
+lib/
+├── config.ts                   Shared configuration (NEXT_PUBLIC_TOKEN_LIMIT)
+└── supabase/
+    ├── client.ts               Supabase browser client
+    └── server.ts               Supabase server client
+proxy.ts                        Session refresh on every request
+.env.example                    Environment variables template
+```
+
+## Context
+
+Built as Week 5 of a 12-month roadmap transitioning from Laravel/PHP to AI
+engineering — covering TypeScript, Next.js, RAG systems, and AI agents for
+the international market.
